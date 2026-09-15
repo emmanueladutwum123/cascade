@@ -1,0 +1,12 @@
+build/
+build-*/
+cmake-build-*/
+compile_commands.json
+.cache/
+*.o
+*.a
+*.dSYM/
+.DS_Store
+perf.data*
+*.tick
+data/
