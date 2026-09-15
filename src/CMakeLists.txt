@@ -1,6 +1,8 @@
 add_library(cascade
   core/clock.cpp
   core/histogram.cpp
+  net/socket.cpp
+  net/udp.cpp
 )
 add_library(cascade::cascade ALIAS cascade)
 
