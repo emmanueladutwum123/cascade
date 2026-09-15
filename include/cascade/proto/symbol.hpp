@@ -85,6 +85,28 @@ struct SymbolHash {
   }
 };
 
+/// 64-bit avalanche mix (the finaliser from MurmurHash3).
+///
+/// Both key spaces this project hashes are adversarial for a power-of-two table used
+/// with the identity: exchange order ids are dense and sequential, so masking them
+/// would fill the table in one contiguous run and turn every collision into a long
+/// probe; packed symbols share long runs of identical padding bytes in their high
+/// half, which masking discards entirely. The mix guarantees every input bit affects
+/// every output bit, for the cost of three multiplies.
+struct Mix64Hash {
+  std::size_t operator()(std::uint64_t x) const noexcept {
+    x ^= x >> 33;
+    x *= 0xFF51AFD7ED558CCDull;
+    x ^= x >> 33;
+    x *= 0xC4CEB9FE1A85EC53ull;
+    x ^= x >> 33;
+    return static_cast<std::size_t>(x);
+  }
+};
+
+using SymbolRawHash = Mix64Hash;
+using OrderIdHash = Mix64Hash;
+
 /// Prices are fixed-point integers in units of 1e-6 ("micro-units").
 ///
 /// Floating point is disqualified outright: a book has to answer "is this the same
