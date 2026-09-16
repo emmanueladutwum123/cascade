@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <latch>
 #include <thread>
 #include <vector>
 
@@ -68,6 +69,7 @@ TEST(version_advances_by_two_per_publish) {
 // updates it must never observe a half-written quote. The checksum makes a torn read
 // detectable; without the version protocol this test fails quickly.
 TEST(readers_never_observe_a_torn_quote) {
+  constexpr int kReaderCount = 4;
   SeqlockCell<Quote> cell;
   std::atomic<bool> stop{false};
   std::atomic<std::uint64_t> torn{0};
@@ -77,10 +79,17 @@ TEST(readers_never_observe_a_torn_quote) {
   initial.checksum = Quote::compute_checksum(1, 100, 101, 1, 1);
   cell.store(initial);
 
+  // Readers must be running *before* the writer starts, or on a loaded machine the
+  // writer can finish all 400k stores and set `stop` while threads are still being
+  // created -- the readers then observe nothing and the test passes having checked
+  // nothing. A latch makes the overlap guaranteed rather than probable.
+  std::latch ready(kReaderCount + 1);
+
   std::vector<std::thread> readers;
-  for (int r = 0; r < 4; ++r) {
+  for (int r = 0; r < kReaderCount; ++r) {
     readers.emplace_back([&] {
       std::uint64_t local_reads = 0, local_torn = 0;
+      ready.arrive_and_wait();
       while (!stop.load(std::memory_order_relaxed)) {
         Quote q;
         if (cell.try_load(q)) {
@@ -93,6 +102,7 @@ TEST(readers_never_observe_a_torn_quote) {
     });
   }
 
+  ready.arrive_and_wait();
   for (std::uint64_t i = 1; i <= 400'000; ++i) {
     Quote q;
     q.sequence = i;
@@ -117,8 +127,10 @@ TEST(reader_sees_monotonically_advancing_sequences) {
   std::atomic<bool> stop{false};
   std::atomic<bool> ok{true};
 
+  std::latch ready(2);
   std::thread reader([&] {
     std::uint64_t last = 0;
+    ready.arrive_and_wait();
     while (!stop.load(std::memory_order_relaxed)) {
       const Quote q = cell.load();
       if (q.sequence < last) { ok.store(false); return; }
@@ -126,6 +138,7 @@ TEST(reader_sees_monotonically_advancing_sequences) {
     }
   });
 
+  ready.arrive_and_wait();
   for (std::uint64_t i = 1; i <= 200'000; ++i) {
     Quote q{};
     q.sequence = i;

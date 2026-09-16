@@ -38,7 +38,12 @@ class SeqlockCell {
                 "seqlock payload must be trivially copyable: readers may copy a torn value");
 
  public:
-  SeqlockCell() noexcept { std::memset(&value_, 0, sizeof(value_)); }
+  // Value-initialise rather than memset. GCC rejects memset over a type with default
+  // member initialisers -- correctly, since "trivially copyable" does not imply
+  // "trivially default-constructible", and a payload with NSDMIs would have them
+  // silently overwritten with zero bytes. `{}` gets the same zeroed cell for a POD and
+  // the right answer for anything else.
+  SeqlockCell() = default;
 
   SeqlockCell(const SeqlockCell&) = delete;
   SeqlockCell& operator=(const SeqlockCell&) = delete;
@@ -111,7 +116,7 @@ class SeqlockCell {
 #if defined(CASCADE_THREAD_SANITIZER)
   mutable std::mutex mutex_;
 #endif
-  alignas(kCacheLine) T value_;
+  alignas(kCacheLine) T value_{};
 };
 
 }  // namespace cascade
