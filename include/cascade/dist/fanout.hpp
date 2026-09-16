@@ -341,8 +341,12 @@ class FanoutThread {
       // has already proven it cannot drain it, and the notice is worth more than the
       // market data stuck behind it.
       const std::uint64_t stalled = subscriber->stalled_nanos(now_ns);
+      // Capture the backlog before discarding it: the notice exists to tell an operator
+      // how far behind the client had fallen, and measuring after the discard would
+      // report zero every time.
+      const std::uint64_t backlog = subscriber->pending_bytes();
       subscriber->discard_buffered();
-      subscriber->encode_evicted(subscriber->evict_reason(), stalled);
+      subscriber->encode_evicted(subscriber->evict_reason(), stalled, backlog);
       subscriber->flush_final();
       ++stats_.subscribers_evicted;
       release(slot);

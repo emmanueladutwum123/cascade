@@ -4,3 +4,6 @@ function(cascade_add_app name)
 endfunction()
 
 cascade_add_app(cascade-bench)
+cascade_add_app(cascade-feedsim)
+cascade_add_app(cascaded)
+cascade_add_app(cascade-sub)

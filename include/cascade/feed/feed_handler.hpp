@@ -56,9 +56,17 @@ class RecoveryRequester {
 class FeedHandler {
  public:
   struct Config {
-    /// Packets held while waiting for a gap to fill. Sized in packets, not bytes,
-    /// because reordering is a property of the path, not of the payload.
-    std::size_t reorder_window{64};
+    /// Packets held while a gap is outstanding.
+    ///
+    /// Sized by *recovery latency*, not by network reordering. Genuine reordering
+    /// resolves within a handful of packets, so a small window looks sufficient -- and
+    /// is catastrophically wrong. While a gap is open every subsequent packet is ahead
+    /// of us and must be held; at 10,000 packets/second a 250ms recovery deadline means
+    /// 2,500 packets arrive before we know the outcome. A 64-packet window overflows
+    /// 6ms in, and every packet dropped from it becomes a second hole that recovery was
+    /// never asked to fill -- turning one lost datagram into tens of thousands of lost
+    /// messages. That cascade is exactly what this default exists to prevent.
+    std::size_t reorder_window{4096};
     /// How long a gap must persist before we ask for a retransmit, rather than
     /// assuming the packet is merely late.
     std::uint64_t gap_grace_ns{2'000'000};          // 2ms
@@ -208,7 +216,7 @@ class FeedHandler {
       retransmit_sent_ = true;
     }
 
-    if (now_ns - gap_opened_ns_ >= config_.recovery_deadline_ns) {
+    if (window_overflowed_ || now_ns - gap_opened_ns_ >= config_.recovery_deadline_ns) {
       abandon_gap(now_ns, sink);
     }
   }
@@ -324,20 +332,16 @@ class FeedHandler {
       if (!slot.occupied && !target) target = &slot;
     }
     if (!target) {
-      // The window is full, which means we are holding `reorder_window` packets behind
-      // an unfilled gap. Evict the *furthest ahead*: it is the one we are least likely
-      // to need soon, and keeping the nearest maximises the chance of delivering a
-      // contiguous run the moment the hole is plugged.
-      Slot* furthest = &slots_[0];
-      for (Slot& slot : slots_) {
-        if (slot.sequence > furthest->sequence) furthest = &slot;
-      }
-      if (furthest->sequence < sequence) {
-        ++stats_.packets_dropped_window;
-        return;  // the new packet is itself the furthest; drop it
-      }
-      target = furthest;
+      // The window is full: we are holding `reorder_window` packets behind a hole that
+      // recovery has not filled. Dropping held packets to make room is the tempting
+      // move and the wrong one -- each one discarded becomes a fresh hole nobody will
+      // ever ask for, so one lost datagram silently multiplies into thousands of lost
+      // messages. Waiting longer cannot help either, since there is nowhere to put what
+      // arrives. Signal that the gap is over so the caller abandons it now, losing only
+      // what was actually missing.
       ++stats_.packets_dropped_window;
+      window_overflowed_ = true;
+      return;
     }
     target->sequence = sequence;
     target->count = count;
@@ -373,6 +377,15 @@ class FeedHandler {
     }
   }
 
+  /// Record that `sequence` arrived while we were still expecting something earlier.
+  ///
+  /// `gap_end_` tracks the *earliest* sequence we hold beyond the hole, not the latest
+  /// we have seen. The distinction is the difference between a working recovery path
+  /// and a broken one. Packets keep arriving while a gap is open, and taking the
+  /// newest would grow the hole to span all of them -- so the retransmit request would
+  /// ask for hundreds of messages that are sitting in the reorder window already, and
+  /// abandoning the gap would discard all of them. The hole is only what is missing:
+  /// [expected, first thing we actually have).
   void note_gap(std::uint64_t sequence, std::uint64_t now_ns) noexcept {
     if (!gap_open_) {
       gap_open_ = true;
@@ -381,8 +394,8 @@ class FeedHandler {
       gap_opened_ns_ = now_ns;
       retransmit_sent_ = false;
       ++stats_.gaps_detected;
-    } else if (sequence > gap_end_) {
-      gap_end_ = sequence;  // the hole grew while we were waiting
+    } else if (sequence < gap_end_ && sequence > expected_sequence_) {
+      gap_end_ = sequence;  // something closer to the hole turned up
     }
   }
 
@@ -390,6 +403,7 @@ class FeedHandler {
     if (gap_open_ && recovered) ++stats_.gaps_recovered;
     gap_open_ = false;
     retransmit_sent_ = false;
+    window_overflowed_ = false;
   }
 
   void request_retransmit() {
@@ -440,6 +454,7 @@ class FeedHandler {
 
   bool gap_open_{false};
   bool gap_abandoned_{false};
+  bool window_overflowed_{false};
   bool retransmit_sent_{false};
   std::uint64_t gap_start_{0};
   std::uint64_t gap_end_{0};

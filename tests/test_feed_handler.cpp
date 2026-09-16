@@ -418,3 +418,99 @@ TEST(unknown_message_types_are_skipped_without_desyncing) {
   CHECK_EQ(collected.order_ids[1], std::uint64_t{2});
   CHECK_EQ(handler.expected_sequence(), std::uint64_t{4});
 }
+
+// A retransmit request must ask for what is actually missing, not for everything that
+// has arrived since. Packets that kept coming during the gap are already held in the
+// reorder window; asking for them again floods the venue's recovery server with work
+// nobody needs, and is how a recovery server gets buried during the one incident where
+// it matters.
+TEST(a_retransmit_asks_only_for_the_hole) {
+  FeedHandler handler(fast_config());
+  RecordingRequester requester;
+  handler.set_recovery_requester(&requester);
+  PacketBuilder builder;
+  Collector collected;
+  handler.start_session(builder.session(), 1);
+
+  const auto packet1 = add_order_packet(builder, 1, 1, 3);
+  handler.on_datagram(packet1.data(), packet1.size(), 1'000, collected);
+
+  // Sequences 4-6 are lost. Everything from 7 onwards keeps arriving normally.
+  for (std::uint64_t sequence = 7; sequence < 7 + 3 * 5; sequence += 3) {
+    const auto packet = add_order_packet(builder, sequence, sequence, 3);
+    handler.on_datagram(packet.data(), packet.size(), 1'000, collected);
+  }
+
+  handler.poll(1'000 + 2'000'000, collected);
+  CHECK_EQ(requester.asks.size(), std::size_t{1});
+  CHECK_EQ(requester.asks[0].first, std::uint64_t{4});
+  // Three missing, not the eighteen that have gone by since.
+  CHECK_EQ(requester.asks[0].count, std::uint16_t{3});
+}
+
+TEST(abandoning_a_gap_loses_only_the_hole) {
+  FeedHandler handler(fast_config());
+  PacketBuilder builder;
+  Collector collected;
+  handler.start_session(builder.session(), 1);
+
+  std::uint64_t lost_count = 0;
+  handler.set_loss_handler([&](std::uint64_t, std::uint64_t count, std::uint64_t) {
+    lost_count = count;
+  });
+
+  const auto packet1 = add_order_packet(builder, 1, 1, 3);
+  handler.on_datagram(packet1.data(), packet1.size(), 1'000, collected);
+  for (std::uint64_t sequence = 7; sequence < 7 + 3 * 4; sequence += 3) {
+    const auto packet = add_order_packet(builder, sequence, sequence, 3);
+    handler.on_datagram(packet.data(), packet.size(), 1'000, collected);
+  }
+
+  handler.poll(1'000 + 50'000'000, collected);
+
+  // Only 4, 5 and 6 are gone. Everything held behind them is released, not discarded.
+  CHECK_EQ(lost_count, std::uint64_t{3});
+  CHECK_EQ(handler.stats().messages_lost, std::uint64_t{3});
+  CHECK_EQ(collected.order_ids.size(), std::size_t{15});
+  CHECK_EQ(collected.order_ids[3], std::uint64_t{7});
+  CHECK_EQ(collected.order_ids.back(), std::uint64_t{18});
+}
+
+// When the window fills, waiting longer cannot help -- there is nowhere to put what
+// arrives next. Abandoning immediately bounds the loss to the original hole; dropping
+// held packets to make room would turn one lost datagram into thousands of lost
+// messages, each a hole nobody would ever ask to have filled.
+TEST(a_full_reorder_window_abandons_rather_than_cascading) {
+  FeedHandler::Config config;
+  config.reorder_window = 4;
+  config.gap_grace_ns = 1'000'000;
+  config.recovery_deadline_ns = 60'000'000'000ull;  // never reached in this test
+  FeedHandler handler(config);
+  PacketBuilder builder;
+  Collector collected;
+  handler.start_session(builder.session(), 1);
+
+  std::uint64_t lost_count = 0;
+  handler.set_loss_handler([&](std::uint64_t, std::uint64_t count, std::uint64_t) {
+    lost_count = count;
+  });
+
+  const auto packet1 = add_order_packet(builder, 1, 1, 2);
+  handler.on_datagram(packet1.data(), packet1.size(), 1'000, collected);
+
+  // Sequence 3-4 lost; six more packets arrive into a four-slot window.
+  for (std::uint64_t sequence = 5; sequence < 5 + 2 * 6; sequence += 2) {
+    const auto packet = add_order_packet(builder, sequence, sequence, 2);
+    handler.on_datagram(packet.data(), packet.size(), 1'000, collected);
+  }
+  CHECK_GE(handler.stats().packets_dropped_window, std::uint64_t{1});
+
+  handler.poll(1'000 + 2'000'000, collected);
+
+  // Two messages lost -- the actual hole -- rather than everything the window could
+  // not hold, and the connection resumes cleanly from what was held.
+  CHECK_EQ(lost_count, std::uint64_t{2});
+  CHECK(!handler.in_gap());
+  CHECK_GE(collected.order_ids.size(), std::size_t{6});
+  CHECK_EQ(collected.order_ids[2], std::uint64_t{5});
+}

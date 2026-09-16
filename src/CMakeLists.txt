@@ -3,6 +3,7 @@ add_library(cascade
   core/histogram.cpp
   net/socket.cpp
   net/udp.cpp
+  net/tcp.cpp
 )
 add_library(cascade::cascade ALIAS cascade)
 

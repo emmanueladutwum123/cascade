@@ -349,7 +349,7 @@ TEST(unsubscribing_stops_delivery) {
 TEST(eviction_notice_names_the_reason) {
   FakeSocket socket;
   Subscriber subscriber(1, Subscriber::Config{}, &socket);
-  subscriber.encode_evicted(cascade::proto::EvictReason::kSlowConsumer, 12'345);
+  subscriber.encode_evicted(cascade::proto::EvictReason::kSlowConsumer, 12'345, 9'876);
   subscriber.flush(0);
 
   CHECK_EQ(count_frames(socket.received, cascade::proto::ClientMsgType::kEvicted),
@@ -359,6 +359,7 @@ TEST(eviction_notice_names_the_reason) {
               sizeof(body));
   CHECK_EQ(body.reason, static_cast<std::uint8_t>(cascade::proto::EvictReason::kSlowConsumer));
   CHECK_EQ(body.stalled_nanos, std::uint64_t{12'345});
+  CHECK_EQ(body.backlog_bytes, std::uint64_t{9'876});
 }
 
 // --- publication log ------------------------------------------------------

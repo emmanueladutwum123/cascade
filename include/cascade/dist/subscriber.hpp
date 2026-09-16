@@ -333,10 +333,13 @@ class Subscriber {
   /// Tell the client why it is being disconnected, and try hard to get the message
   /// out: a bare TCP reset leaves an operator guessing between "too slow", "idle" and
   /// "server restarted", which demand completely different fixes.
-  bool encode_evicted(proto::EvictReason reason, std::uint64_t stalled_ns) {
+  /// `backlog_bytes` is passed in rather than read from the buffer, because the caller
+  /// has usually just discarded that buffer to make room for this very message.
+  bool encode_evicted(proto::EvictReason reason, std::uint64_t stalled_ns,
+                      std::uint64_t backlog_bytes) {
     proto::EvictedMsg body{};
     body.reason = static_cast<std::uint8_t>(reason);
-    body.backlog_bytes = output_.pending();
+    body.backlog_bytes = backlog_bytes;
     body.stalled_nanos = stalled_ns;
     return emit(proto::ClientMsgType::kEvicted, &body, sizeof(body));
   }
