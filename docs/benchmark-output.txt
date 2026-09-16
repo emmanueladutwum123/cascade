@@ -9,21 +9,21 @@ cascade-bench
 
 Primitives (single-threaded, amortised over the loop)
 ------------------------------------------------------------------------------
-  SpscRing                                5.37 ns  push + pop round trip
-  Seqlock store                           5.13 ns  publish a 368-byte book image
-  Seqlock load                            5.64 ns  uncontended read
-  FlatHashMap find                        7.99 ns  500000 live entries
-  FlatHashMap churn                      38.46 ns  erase + insert at steady occupancy
+  SpscRing                                6.80 ns  push + pop round trip
+  Seqlock store                           4.79 ns  publish a 368-byte book image
+  Seqlock load                            5.18 ns  uncontended read
+  FlatHashMap find                        7.13 ns  500000 live entries
+  FlatHashMap churn                      34.36 ns  erase + insert at steady occupancy
     (health)                                34     longest probe chain after churn
-  Order book ladder                      25.30 ns  add + remove near the touch (200 levels deep)
-  Message decode                          1.41 ns  big-endian wire -> normalised event
+  Order book ladder                      23.05 ns  add + remove near the touch (200 levels deep)
+  Message decode                          1.28 ns  big-endian wire -> normalised event
 
 Stage throughput (amortised; the 24MHz counter cannot time single ops)
 ------------------------------------------------------------------------------
-  decode                                   108.01 M/s   (2000000 in 0.019s)
-  decode + book build                        3.94 M/s   (2000000 in 0.508s)
-  decode + book + fan-out                    3.01 M/s   (2000000 in 0.664s)
-    (fan-out share)                         77.91 ns/msg
+  decode                                   115.38 M/s   (2000000 in 0.017s)
+  decode + book build                        4.54 M/s   (2000000 in 0.440s)
+  decode + book + fan-out                    3.30 M/s   (2000000 in 0.605s)
+    (fan-out share)                         82.59 ns/msg
 
 Where the work goes
 ------------------------------------------------------------------------------
@@ -38,23 +38,23 @@ Where the work goes
 Wire-to-wire latency at 250k msg/s offered load (feed -> book -> fan-out -> frame)
 ------------------------------------------------------------------------------
   delivered at offered load                  0.25 M/s   (2000000 in 8.000s)
-  producer fell behind on                    7348 messages (offered load exceeds capacity;
+  producer fell behind on                    3117 messages (offered load exceeds capacity;
                                                    the delay is included in the distribution)
 
-  wire-to-wire         n=231363      min=666       p50=1583      p90=3917      p99=322559    p99.9=9224191   p99.99=19136511  max=20272875 ns
+  wire-to-wire         n=233193      min=750       p50=1541      p90=2041      p99=11375     p99.9=1661951   p99.99=6742015   max=7814750 ns
 
   Distribution (feed message decoded -> subscriber frame written):
   percentile      value(ns)
-  0               666
+  0               750
   10              1166
-  25              1375
-  50              1583
-  75              1958
-  90              3917
-  95              18927
-  99              322559
-  99.9            9224191
-  99.99           19136511
-  99.999          20217855
-  100             20283391
+  25              1333
+  50              1541
+  75              1750
+  90              2041
+  95              2333
+  99              11375
+  99.9            1661951
+  99.99           6742015
+  99.999          7757823
+  100             7815167
 

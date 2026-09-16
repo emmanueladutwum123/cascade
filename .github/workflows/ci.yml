@@ -1,0 +1,132 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Warnings are errors everywhere. The project leans on -Wconversion and
+  # -Wold-style-cast in particular: in code that spends its life moving between
+  # fixed-point prices, wire-format integers and array indices, a silent narrowing
+  # conversion is a genuine bug waiting for a large enough number.
+  build:
+    name: ${{ matrix.os }} / ${{ matrix.compiler }} / ${{ matrix.build_type }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        compiler: [gcc, clang]
+        build_type: [Debug, Release]
+        exclude:
+          # Apple's "gcc" is a clang shim; running it would just duplicate the clang job.
+          - os: macos-latest
+            compiler: gcc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select compiler
+        run: |
+          if [ "${{ matrix.compiler }}" = "gcc" ]; then
+            echo "CC=gcc" >> "$GITHUB_ENV"
+            echo "CXX=g++" >> "$GITHUB_ENV"
+          else
+            echo "CC=clang" >> "$GITHUB_ENV"
+            echo "CXX=clang++" >> "$GITHUB_ENV"
+          fi
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCASCADE_WERROR=ON
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -j 4
+
+      # Proves the whole system runs, not just that the pieces compile: a venue
+      # publishing with injected packet loss, the plant recovering every gap, and a
+      # subscriber receiving real books and trades.
+      - name: End-to-end smoke test
+        run: ./scripts/smoke.sh build
+
+  # The lock-free code is where a bug is least likely to show up as a test failure and
+  # most likely to show up as a wrong price once a quarter, so it gets checked by tools
+  # rather than by reading.
+  sanitizers:
+    name: sanitizer / ${{ matrix.sanitizer }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, undefined, thread]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        run: >
+          cmake -S . -B build-${{ matrix.sanitizer }}
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCASCADE_SANITIZER=${{ matrix.sanitizer }}
+          -DCASCADE_WERROR=ON
+
+      - name: Build
+        run: cmake --build build-${{ matrix.sanitizer }} -j
+
+      - name: Test
+        env:
+          # halt_on_error makes a failure land on the offending test rather than at the
+          # end of the run; second_deadlock_stack gives TSan enough context to name both
+          # sides of a lock-order inversion.
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: ctest --test-dir build-${{ matrix.sanitizer }} --output-on-failure -j 2
+
+      - name: End-to-end smoke test
+        if: matrix.sanitizer != 'thread'
+        env:
+          # detect_leaks is deliberately absent here (it is on for the unit tests
+          # above): these are long-running daemons killed by signal, so every live
+          # allocation is reported as a leak at exit and the run is pure noise.
+          ASAN_OPTIONS: halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          # A sanitized build is far slower, so the smoke test runs at a rate it can
+          # actually keep up with -- otherwise it would measure the sanitizer.
+          RATE: 5000
+          RUNTIME: 14
+        run: ./scripts/smoke.sh build-${{ matrix.sanitizer }}
+
+  benchmark:
+    name: benchmark (smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCASCADE_BUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build -j
+
+      # A short run, purely to prove the harness still works. Numbers from a shared CI
+      # runner are not worth reporting: the machine is virtualised, the cores are
+      # contended, and publishing a p99.9 measured under those conditions would be
+      # actively misleading.
+      - name: Run
+        run: ./build/apps/cascade-bench --messages 300000 --rate 100000
