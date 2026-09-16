@@ -1,5 +1,9 @@
 # cascade
 
+[![ci](https://github.com/emmanueladutwum123/cascade/actions/workflows/ci.yml/badge.svg)](https://github.com/emmanueladutwum123/cascade/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C.svg)](https://en.cppreference.com/w/cpp/20)
+
 A low-latency market data ticker plant in C++20, with zero third-party dependencies.
 
 It consumes an unreliable UDP multicast exchange feed, recovers lost packets, builds
