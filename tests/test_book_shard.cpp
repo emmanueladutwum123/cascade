@@ -52,10 +52,17 @@ BookImage read(const BookShard& shard, std::uint32_t index) {
   return shard.published(index).load();
 }
 
+/// Instruments come from a security master before the session opens, never lazily from
+/// the feed, so every test registers up front the way the real control plane does.
+void register_symbols(BookShard& shard, std::initializer_list<const char*> symbols) {
+  for (const char* text : symbols) shard.register_symbol(Symbol::from_text(text));
+}
+
 }  // namespace
 
 TEST(add_builds_a_book_and_publishes_it) {
   BookShard shard(BookShard::Config{});
+  register_symbols(shard, {"AAPL"});
   shard.apply(add_order(1, "AAPL", Side::kBuy, 190.00, 100, 1));
   shard.apply(add_order(2, "AAPL", Side::kSell, 190.05, 200, 2));
 
@@ -73,6 +80,7 @@ TEST(add_builds_a_book_and_publishes_it) {
 
 TEST(delete_removes_the_order_it_names) {
   BookShard shard(BookShard::Config{});
+  register_symbols(shard, {"IBM"});
   shard.apply(add_order(1, "IBM", Side::kBuy, 140.00, 100, 1));
   shard.apply(add_order(2, "IBM", Side::kBuy, 139.95, 500, 2));
   const std::uint32_t index = shard.lookup(Symbol::from_text("IBM"));
@@ -86,6 +94,7 @@ TEST(delete_removes_the_order_it_names) {
 
 TEST(partial_cancel_reduces_without_removing) {
   BookShard shard(BookShard::Config{});
+  register_symbols(shard, {"IBM"});
   shard.apply(add_order(1, "IBM", Side::kBuy, 140.00, 100, 1));
   const std::uint32_t index = shard.lookup(Symbol::from_text("IBM"));
 
@@ -106,6 +115,7 @@ TEST(execute_reduces_the_book_and_prints_a_trade) {
   DirtySet dirty(1024);
   TradeRing trades;
   shard.attach_fanout(0, &dirty, &trades);
+  register_symbols(shard, {"MSFT"});
 
   shard.apply(add_order(1, "MSFT", Side::kSell, 420.00, 300, 1));
   const std::uint32_t index = shard.lookup(Symbol::from_text("MSFT"));
@@ -133,6 +143,7 @@ TEST(trades_are_not_emitted_when_nobody_is_watching) {
   DirtySet dirty(1024);
   TradeRing trades;
   shard.attach_fanout(0, &dirty, &trades);
+  register_symbols(shard, {"MSFT"});
 
   shard.apply(add_order(1, "MSFT", Side::kSell, 420.00, 300, 1));
   shard.apply(by_id(MsgType::kExecute, 1, 120, 2));
@@ -144,6 +155,7 @@ TEST(trades_are_not_emitted_when_nobody_is_watching) {
 
 TEST(replace_forfeits_queue_position) {
   BookShard shard(BookShard::Config{});
+  register_symbols(shard, {"GOOG"});
   shard.apply(add_order(1, "GOOG", Side::kBuy, 150.00, 100, 1));
   const std::uint32_t index = shard.lookup(Symbol::from_text("GOOG"));
 
@@ -183,6 +195,7 @@ TEST(activity_below_the_visible_depth_never_reaches_the_fanout) {
   DirtySet dirty(1024);
   TradeRing trades;
   shard.attach_fanout(0, &dirty, &trades);
+  register_symbols(shard, {"SPY"});
 
   std::uint64_t seq = 1;
   for (int i = 0; i < 15; ++i) {
@@ -220,6 +233,7 @@ TEST(only_interested_fanouts_are_notified) {
   TradeRing trades_a, trades_b;
   shard.attach_fanout(0, &dirty_a, &trades_a);
   shard.attach_fanout(1, &dirty_b, &trades_b);
+  register_symbols(shard, {"NVDA"});
 
   shard.apply(add_order(1, "NVDA", Side::kBuy, 900.00, 100, 1));
   const std::uint32_t index = shard.lookup(Symbol::from_text("NVDA"));
@@ -242,6 +256,7 @@ TEST(reset_clears_the_book_and_flags_it_stale) {
   // An unrecoverable gap means the book is built from an incomplete delta stream and
   // is permanently wrong. Subscribers must be told at once, not left holding it.
   BookShard shard(BookShard::Config{});
+  register_symbols(shard, {"AMD"});
   shard.apply(add_order(1, "AMD", Side::kBuy, 170.00, 100, 1));
   shard.apply(add_order(2, "AMD", Side::kSell, 170.10, 100, 2));
   const std::uint32_t index = shard.lookup(Symbol::from_text("AMD"));
@@ -275,6 +290,7 @@ TEST(shard_routing_spreads_symbols_across_shards) {
 
 TEST(market_close_flags_every_book_in_the_shard) {
   BookShard shard(BookShard::Config{});
+  register_symbols(shard, {"AAPL", "MSFT"});
   shard.apply(add_order(1, "AAPL", Side::kBuy, 190.00, 100, 1));
   shard.apply(add_order(2, "MSFT", Side::kBuy, 420.00, 100, 2));
 
@@ -293,14 +309,65 @@ TEST(symbol_capacity_is_enforced_rather_than_overrunning) {
   BookShard::Config config;
   config.max_symbols = 2;
   BookShard shard(config);
-  shard.apply(add_order(1, "AAA", Side::kBuy, 1.0, 10, 1));
-  shard.apply(add_order(2, "BBB", Side::kBuy, 1.0, 10, 2));
+  shard.register_symbol(Symbol::from_text("AAA"));
+  shard.register_symbol(Symbol::from_text("BBB"));
   bool threw = false;
   try {
-    shard.apply(add_order(3, "CCC", Side::kBuy, 1.0, 10, 3));
+    shard.register_symbol(Symbol::from_text("CCC"));
   } catch (const std::runtime_error&) {
     threw = true;
   }
   CHECK(threw);
   CHECK_EQ(shard.symbol_count(), std::size_t{2});
+}
+
+TEST(events_for_unregistered_instruments_are_dropped_and_counted) {
+  // Admitting an unknown symbol would mean the shard thread rehashing the symbol map
+  // while fan-out threads read it to resolve subscriptions. Counting and dropping keeps
+  // that map read-only for the whole session, which is what makes it safe to share.
+  BookShard shard(BookShard::Config{});
+  register_symbols(shard, {"AAPL"});
+
+  shard.apply(add_order(1, "NOPE", Side::kBuy, 10.0, 100, 1));
+  CHECK_EQ(shard.stats().unknown_symbol, std::uint64_t{1});
+  CHECK_EQ(shard.symbol_count(), std::size_t{1});
+
+  // A registered instrument on the same shard is unaffected.
+  shard.apply(add_order(2, "AAPL", Side::kBuy, 190.0, 100, 2));
+  const std::uint32_t index = shard.lookup(Symbol::from_text("AAPL"));
+  CHECK_EQ(read(shard, index).bid_levels, std::uint8_t{1});
+}
+
+TEST(the_publication_log_records_every_published_version) {
+  BookShard shard(BookShard::Config{});
+  register_symbols(shard, {"AAPL"});
+  cascade::dist::PublicationLog log(64);
+  log.set_enabled(true);
+  shard.set_publication_log(&log);
+
+  shard.apply(add_order(1, "AAPL", Side::kBuy, 190.00, 100, 1));
+  shard.apply(add_order(2, "AAPL", Side::kBuy, 190.05, 100, 2));
+  shard.apply(add_order(3, "AAPL", Side::kSell, 190.10, 100, 3));
+
+  CHECK_EQ(log.write_position(), std::uint64_t{3});
+  BookImage image;
+  for (std::uint64_t position = 0; position < 3; ++position) {
+    CHECK(log.read(position, image));
+    CHECK_EQ(image.version, position + 1);
+  }
+}
+
+TEST(a_disabled_publication_log_costs_nothing) {
+  // Every subscriber conflated is the common case, and the log is a full image copy
+  // per publish; it must not be paid for when nobody reads it.
+  BookShard shard(BookShard::Config{});
+  register_symbols(shard, {"AAPL"});
+  cascade::dist::PublicationLog log(64);
+  shard.set_publication_log(&log);  // left disabled
+
+  for (std::uint64_t i = 1; i <= 10; ++i) {
+    shard.apply(add_order(i, "AAPL", Side::kBuy, 190.0 + static_cast<double>(i), 100, i));
+  }
+  CHECK_EQ(log.write_position(), std::uint64_t{0});
+  CHECK_EQ(shard.stats().books_published, std::uint64_t{10});
 }

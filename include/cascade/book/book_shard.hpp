@@ -12,6 +12,7 @@
 #include "cascade/core/flat_hash_map.hpp"
 #include "cascade/core/seqlock.hpp"
 #include "cascade/core/spsc_ring.hpp"
+#include "cascade/dist/publication_log.hpp"
 #include "cascade/feed/event.hpp"
 
 namespace cascade::book {
@@ -62,6 +63,7 @@ class BookShard {
     std::uint64_t trades{0};
     std::uint64_t trades_dropped{0};        ///< Fan-out trade ring was full.
     std::uint64_t unknown_order{0};         ///< Referenced an order we never saw.
+    std::uint64_t unknown_symbol{0};        ///< Not in the security master.
     std::uint64_t book_corrupt{0};          ///< Ladder rejected a removal.
     std::uint64_t symbols{0};
   };
@@ -92,15 +94,39 @@ class BookShard {
   /// Which shard owns an instrument. Hashing rather than range-partitioning means a
   /// single hot instrument cannot pull a whole contiguous block of the alphabet onto
   /// one core, which is exactly what happens when you partition by first letter.
+  ///
+  /// **A shard is a feed channel, not an arbitrary slice of instruments.** This is the
+  /// constraint the whole partitioning scheme has to respect, and it comes from the
+  /// wire format: an order-by-order feed identifies orders by id alone. A Delete
+  /// carries an order id and nothing else — no symbol — so the only way to know which
+  /// book it touches is to already hold that order, which means the Add and the Delete
+  /// must land on the same shard.
+  ///
+  /// There is no hash of an order id that can guarantee that, so routing by instrument
+  /// after the fact is impossible. Venues solve it by partitioning their multicast
+  /// groups by symbol range, so every message for an instrument — and every message for
+  /// its orders — arrives on one channel. The plant mirrors that: one feed handler and
+  /// one shard per channel, and an order's whole lifecycle stays on the thread that
+  /// owns it. `shard_for` is therefore used to *assign* instruments to channels at
+  /// startup, never to route a message that has already arrived.
   static std::uint32_t shard_for(Symbol symbol, std::uint32_t shard_count) noexcept {
     return static_cast<std::uint32_t>(symbol.hash() % shard_count);
   }
 
   // --- instrument registry -------------------------------------------------
 
-  /// Index for an instrument, registering it if it is new. Called from the shard
-  /// thread on first sight of a symbol, and from the control plane at startup.
-  std::uint32_t index_for(Symbol symbol) {
+  /// Register an instrument. **Startup only**, before any feed traffic is applied.
+  ///
+  /// Registration is deliberately not something the feed path does on first sight of a
+  /// symbol. Doing it lazily would mean the shard thread mutating (and rehashing) the
+  /// symbol map while fan-out threads are reading it to resolve subscriptions -- a data
+  /// race on the single structure both tiers need. Venues publish a security master
+  /// before the open precisely so consumers can build this table up front, so the plant
+  /// does the same: the map is written once and is read-only for the whole session.
+  ///
+  /// An instrument that appears on the feed without being registered is counted and its
+  /// events dropped, rather than being admitted and quietly racing the fan-out.
+  std::uint32_t register_symbol(Symbol symbol) {
     if (const std::uint32_t* existing = symbol_to_index_.find(symbol.raw())) return *existing;
     if (books_.size() >= config_.max_symbols) {
       throw std::runtime_error("shard instrument capacity exceeded");
@@ -131,6 +157,10 @@ class BookShard {
   const OrderBook& book(std::uint32_t index) const noexcept { return books_[index]; }
 
   // --- fan-out wiring ------------------------------------------------------
+
+  /// Attach the publication log that serves un-conflated subscribers.
+  void set_publication_log(dist::PublicationLog* log) noexcept { log_ = log; }
+  dist::PublicationLog* publication_log() const noexcept { return log_; }
 
   /// Register a fan-out thread's dirty set and trade ring with this shard.
   void attach_fanout(std::uint32_t fanout_id, DirtySet* dirty, TradeRing* trades) {
@@ -219,7 +249,8 @@ class BookShard {
   }
 
   void apply_add(const feed::FeedEvent& event) {
-    const std::uint32_t index = index_for(event.packed_symbol());
+    const std::uint32_t index = lookup(event.packed_symbol());
+    if (index == kNoIndex) { ++stats_.unknown_symbol; return; }
     books_[index].add(event.order_side(), event.price, event.quantity);
     OrderEntry entry;
     entry.book_index = index;
@@ -305,7 +336,8 @@ class BookShard {
   /// A non-displayable execution: it prints to the tape but never rested in the book,
   /// so there is nothing to remove.
   void apply_trade(const feed::FeedEvent& event) {
-    const std::uint32_t index = index_for(event.packed_symbol());
+    const std::uint32_t index = lookup(event.packed_symbol());
+    if (index == kNoIndex) { ++stats_.unknown_symbol; return; }
     emit_trade(index, event, event.price, event.quantity, event.side);
   }
 
@@ -328,6 +360,7 @@ class BookShard {
 
     feed::TradeEvent trade;
     trade.symbol = books_[index].symbol().raw();
+    trade.book_index = index;
     trade.match_id = event.aux_id;
     trade.exchange_ns = event.exchange_ns;
     trade.ingest_ns = event.ingest_ns;
@@ -362,6 +395,10 @@ class BookShard {
     staging_.version = previous.version + 1;
     previous = staging_;
     cells_[index].store(staging_);
+    // Only subscribers asking for every state need the log, and maintaining it costs a
+    // full image copy per publish. Checking first means a plant whose subscribers are
+    // all conflated -- the common case -- pays nothing for the feature.
+    if (log_ && log_->enabled()) log_->append(staging_);
     ++stats_.books_published;
 
     std::uint32_t mask = quote_interest_[index].load(std::memory_order_acquire);
@@ -383,6 +420,7 @@ class BookShard {
   std::unique_ptr<std::atomic<std::uint32_t>[]> quote_interest_;
   std::unique_ptr<std::atomic<std::uint32_t>[]> trade_interest_;
   std::vector<Fanout> fanouts_;
+  dist::PublicationLog* log_{nullptr};
   BookImage staging_;  ///< Reused across publishes so the hot path never allocates.
   Stats stats_;
 };

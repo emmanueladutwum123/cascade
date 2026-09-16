@@ -23,11 +23,12 @@ struct Subscription {
   std::uint8_t flags{proto::kFlagConflated};
   VenueId venue{kUnknownVenue};
 
-  /// Highest version this subscriber has actually been sent.
+  /// Highest version this subscriber has actually been sent. Together with the
+  /// version being sent now, this *is* the conflation count -- versions are monotonic
+  /// per instrument and increment only on a visible change, so the gap between them is
+  /// exactly the number of book states the client never saw. Deriving it beats keeping
+  /// a running tally, which double-counts every retry of the same superseded state.
   std::uint64_t last_sent_version{0};
-  /// Versions superseded and never sent because the socket was backed up. Reported to
-  /// the subscriber on the next update it does receive.
-  std::uint32_t conflated_count{0};
   /// Waiting to be sent: the book moved but the socket had no room.
   bool pending{false};
   bool active{true};
@@ -71,7 +72,11 @@ class Subscriber {
 
   struct Stats {
     std::uint64_t book_updates_sent{0};
+    /// Book states the client provably never saw, summed exactly from version gaps.
     std::uint64_t book_updates_conflated{0};
+    /// Times an update could not be written because the socket was backed up. Distinct
+    /// from the above: this counts attempts, that counts information actually skipped.
+    std::uint64_t offers_deferred{0};
     std::uint64_t trades_sent{0};
     std::uint64_t trades_queued{0};
     std::uint64_t bytes_sent{0};
@@ -162,21 +167,29 @@ class Subscriber {
     if (!subscription.active) return;
     if (image.version <= subscription.last_sent_version) return;  // nothing new
 
-    if (!encode_book_update(image, subscription.conflated_count)) {
+    // Exactly how many states this client is about to skip over. Zero on the first
+    // update, where there is no previous version to measure a gap against.
+    const std::uint64_t gap =
+        subscription.last_sent_version == 0
+            ? 0
+            : image.version - subscription.last_sent_version - 1;
+    const std::uint32_t skipped =
+        gap > UINT32_MAX ? UINT32_MAX : static_cast<std::uint32_t>(gap);
+
+    if (!encode_book_update(image, skipped)) {
       // No room. Flag the instrument and let the next drain re-read its *current*
       // image: sending this one once space appears would ship a book already history.
       if (!subscription.pending) {
         subscription.pending = true;
         pending_queue_.push_back(subscription_index);
       }
-      ++subscription.conflated_count;
-      ++stats_.book_updates_conflated;
+      ++stats_.offers_deferred;
       return;
     }
 
     subscription.last_sent_version = image.version;
-    subscription.conflated_count = 0;
     subscription.pending = false;
+    stats_.book_updates_conflated += skipped;
     ++stats_.book_updates_sent;
   }
 
@@ -202,15 +215,28 @@ class Subscriber {
   const std::vector<std::uint32_t>& pending_subscriptions() const noexcept {
     return pending_queue_;
   }
-  void clear_pending_queue() noexcept { pending_queue_.clear(); }
 
-  /// Re-arm a pending subscription that still could not be satisfied this pass.
-  void requeue_pending(std::uint32_t subscription_index) {
-    if (subscription_index >= subscriptions_.size()) return;
-    Subscription& subscription = subscriptions_[subscription_index];
-    if (subscription.active && subscription.pending) {
-      pending_queue_.push_back(subscription_index);
+  /// Hand over the pending list and reset the per-instrument flags together.
+  ///
+  /// These two pieces of state must move as one. `offer_book` only appends to the
+  /// queue when the flag is not already set -- that is what stops one instrument
+  /// occupying the queue a thousand times -- so draining the queue without clearing
+  /// the flags leaves every instrument marked-but-unqueued. A retry that still cannot
+  /// fit would then fail to re-queue itself, and the subscriber would stop receiving
+  /// that instrument for the rest of the session while looking perfectly healthy.
+  void take_pending(std::vector<std::uint32_t>& out) {
+    out = pending_queue_;
+    pending_queue_.clear();
+    for (std::uint32_t index : out) {
+      if (index < subscriptions_.size()) subscriptions_[index].pending = false;
     }
+  }
+
+  void clear_pending_queue() noexcept {
+    for (std::uint32_t index : pending_queue_) {
+      if (index < subscriptions_.size()) subscriptions_[index].pending = false;
+    }
+    pending_queue_.clear();
   }
 
   // --- socket --------------------------------------------------------------
@@ -316,6 +342,23 @@ class Subscriber {
   }
 
   void note_resync() { ++stats_.resyncs; }
+
+  /// Best-effort write that ignores the evicted flag.
+  ///
+  /// The ordinary `flush` refuses once a subscriber is evicted, which is right for
+  /// market data but wrong for the eviction notice itself — the one message the client
+  /// most needs. This gets that notice out on a socket that may well refuse it, and
+  /// does not care if it fails.
+  void flush_final() {
+    net::OutputBuffer::Span spans[2];
+    const int span_count = output_.readable(spans);
+    if (span_count == 0) return;
+    const long written = sink_->write_some(spans, span_count);
+    if (written > 0) {
+      output_.consume(static_cast<std::size_t>(written));
+      stats_.bytes_sent += static_cast<std::uint64_t>(written);
+    }
+  }
 
   /// Discard everything buffered. Used only when an eviction notice has to be written
   /// into a buffer the client has already proven it cannot drain.

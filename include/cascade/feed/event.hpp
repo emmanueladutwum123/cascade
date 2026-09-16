@@ -69,9 +69,16 @@ struct TradeEvent {
   std::uint64_t ingest_ns{0};
   Price price{0};
   std::uint32_t quantity{0};
+  /// The instrument's index within its shard.
+  ///
+  /// Carried on the event rather than looked up by the reader on arrival. The fan-out
+  /// thread cannot safely consult the shard's symbol map -- that map belongs to the
+  /// shard thread -- so resolving it here, on the side that owns the mapping, is what
+  /// keeps the trade path free of cross-thread lookups.
+  std::uint32_t book_index{0};
   std::uint8_t aggressor_side{0};
   std::uint8_t flags{0};
-  std::uint8_t pad_[2]{};
+  std::uint8_t pad_[6]{};
 };
 static_assert(std::is_trivially_copyable<TradeEvent>::value, "must cross a ring by value");
 

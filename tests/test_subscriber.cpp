@@ -134,7 +134,12 @@ TEST(a_full_socket_conflates_rather_than_queueing) {
     subscriber.flush(0);
   }
 
-  CHECK_GE(subscriber.stats().book_updates_conflated, std::uint64_t{100});
+  // Attempts that could not be written. Distinct from book_updates_conflated, which
+  // counts information actually skipped and is only knowable when an update does go out.
+  CHECK_GE(subscriber.stats().offers_deferred, std::uint64_t{100});
+  // Only as many as the 512-byte buffer could hold; everything after that conflated.
+  CHECK_GE(subscriber.stats().book_updates_sent, std::uint64_t{1});
+  CHECK_LE(subscriber.stats().book_updates_sent, std::uint64_t{10});
   // Memory is bounded by subscriptions, not by how far behind the client is.
   CHECK_LE(subscriber.pending_bytes(), std::size_t{512});
   // Exactly one instrument is owed, however many updates were collapsed.
@@ -153,8 +158,7 @@ TEST(a_drained_socket_sends_current_state_and_reports_what_was_collapsed) {
     subscriber.offer_book(sub, make_image("AAPL", version, 1000, 2000));
     subscriber.flush(0);
   }
-  const std::uint64_t collapsed = subscriber.stats().book_updates_conflated;
-  CHECK_GE(collapsed, std::uint64_t{1});
+  CHECK_GE(subscriber.stats().offers_deferred, std::uint64_t{1});
 
   // The client catches up. It must be given the *latest* book, not the backlog.
   socket.set_window(1u << 20);
