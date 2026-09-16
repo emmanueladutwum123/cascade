@@ -358,7 +358,7 @@ TEST(malformed_packets_are_rejected_without_reading_past_the_buffer) {
   {  // header claims more messages than the payload contains
     FeedHandler handler(fast_config());
     std::vector<unsigned char> forged(valid);
-    cascade::proto::PacketHeader header;
+    cascade::proto::PacketHeader header{};
     std::memcpy(&header, forged.data(), sizeof(header));
     header.message_count.set(50);
     std::memcpy(forged.data(), &header, sizeof(header));
@@ -380,7 +380,7 @@ TEST(malformed_packets_are_rejected_without_reading_past_the_buffer) {
   {  // a message whose declared length is zero would otherwise loop forever
     FeedHandler handler(fast_config());
     std::vector<unsigned char> zero_length(sizeof(cascade::proto::PacketHeader) + 2, 0);
-    cascade::proto::PacketHeader header;
+    cascade::proto::PacketHeader header{};
     std::memcpy(&header, valid.data(), sizeof(header));
     header.message_count.set(1);
     std::memcpy(zero_length.data(), &header, sizeof(header));

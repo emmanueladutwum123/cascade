@@ -64,7 +64,7 @@ std::size_t count_frames(const std::vector<unsigned char>& bytes,
                          cascade::proto::ClientMsgType type) {
   std::size_t offset = 0, found = 0;
   while (offset + sizeof(cascade::proto::FrameHeader) <= bytes.size()) {
-    cascade::proto::FrameHeader header;
+    cascade::proto::FrameHeader header{};
     std::memcpy(&header, bytes.data() + offset, sizeof(header));
     const std::size_t total = sizeof(header) + header.payload_bytes;
     if (offset + total > bytes.size()) break;
@@ -98,9 +98,9 @@ TEST(book_updates_are_framed_and_written) {
            std::size_t{1});
 
   // The frame must round-trip: this is the contract a client parser depends on.
-  cascade::proto::FrameHeader header;
+  cascade::proto::FrameHeader header{};
   std::memcpy(&header, socket.received.data(), sizeof(header));
-  cascade::proto::BookUpdateMsg body;
+  cascade::proto::BookUpdateMsg body{};
   std::memcpy(&body, socket.received.data() + sizeof(header), sizeof(body));
   CHECK_EQ(body.symbol, Symbol::from_text("AAPL").raw());
   CHECK_EQ(body.version, std::uint64_t{1});
@@ -168,15 +168,15 @@ TEST(a_drained_socket_sends_current_state_and_reports_what_was_collapsed) {
   subscriber.offer_book(sub, make_image("AAPL", 500, 1234, 5678));
   subscriber.flush(0);
 
-  cascade::proto::FrameHeader header;
+  cascade::proto::FrameHeader header{};
   std::memcpy(&header, socket.received.data(), sizeof(header));
-  cascade::proto::BookUpdateMsg body;
+  cascade::proto::BookUpdateMsg body{};
   std::memcpy(&body, socket.received.data() + sizeof(header), sizeof(body));
   CHECK_EQ(body.version, std::uint64_t{500});
   // Levels are appended after the fixed header rather than being struct members, so a
   // thinly quoted instrument costs only the levels it actually has.
   CHECK_EQ(body.bid_levels, std::uint8_t{1});
-  cascade::proto::PriceLevel level;
+  cascade::proto::PriceLevel level{};
   std::memcpy(&level, socket.received.data() + sizeof(header) + sizeof(body),
               sizeof(level));
   CHECK_EQ(level.price, std::int64_t{1234});
@@ -315,7 +315,7 @@ TEST(a_frame_is_never_half_written) {
   // Every byte that made it out must parse as whole frames, with nothing left over.
   std::size_t offset = 0;
   while (offset + sizeof(cascade::proto::FrameHeader) <= socket.received.size()) {
-    cascade::proto::FrameHeader header;
+    cascade::proto::FrameHeader header{};
     std::memcpy(&header, socket.received.data() + offset, sizeof(header));
     offset += sizeof(header) + header.payload_bytes;
   }
@@ -354,7 +354,7 @@ TEST(eviction_notice_names_the_reason) {
 
   CHECK_EQ(count_frames(socket.received, cascade::proto::ClientMsgType::kEvicted),
            std::size_t{1});
-  cascade::proto::EvictedMsg body;
+  cascade::proto::EvictedMsg body{};
   std::memcpy(&body, socket.received.data() + sizeof(cascade::proto::FrameHeader),
               sizeof(body));
   CHECK_EQ(body.reason, static_cast<std::uint8_t>(cascade::proto::EvictReason::kSlowConsumer));

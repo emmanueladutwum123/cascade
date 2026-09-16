@@ -256,12 +256,12 @@ class MeasuringSink : public net::ByteSink {
     const std::uint64_t now = hires_nanos();
     std::size_t offset = read_offset_;
     while (offset + sizeof(proto::FrameHeader) <= buffer_.size()) {
-      proto::FrameHeader header;
+      proto::FrameHeader header{};
       std::memcpy(&header, buffer_.data() + offset, sizeof(header));
       const std::size_t total = sizeof(header) + header.payload_bytes;
       if (offset + total > buffer_.size()) break;  // frame still arriving
       if (header.type == static_cast<std::uint8_t>(proto::ClientMsgType::kBookUpdate)) {
-        proto::BookUpdateMsg body;
+        proto::BookUpdateMsg body{};
         std::memcpy(&body, buffer_.data() + offset + sizeof(header), sizeof(body));
         if (body.ingest_ns != 0 && now > body.ingest_ns) {
           histogram_->record(now - body.ingest_ns);

@@ -47,7 +47,7 @@ std::size_t count_frames(const std::vector<unsigned char>& bytes,
                          cascade::proto::ClientMsgType type) {
   std::size_t offset = 0, found = 0;
   while (offset + sizeof(cascade::proto::FrameHeader) <= bytes.size()) {
-    cascade::proto::FrameHeader header;
+    cascade::proto::FrameHeader header{};
     std::memcpy(&header, bytes.data() + offset, sizeof(header));
     const std::size_t total = sizeof(header) + header.payload_bytes;
     if (offset + total > bytes.size()) break;
@@ -66,7 +66,7 @@ bool last_book_update(const std::vector<unsigned char>& bytes,
   std::size_t offset = 0;
   bool found = false;
   while (offset + sizeof(cascade::proto::FrameHeader) <= bytes.size()) {
-    cascade::proto::FrameHeader header;
+    cascade::proto::FrameHeader header{};
     std::memcpy(&header, bytes.data() + offset, sizeof(header));
     const std::size_t total = sizeof(header) + header.payload_bytes;
     if (offset + total > bytes.size()) break;
@@ -80,7 +80,7 @@ bool last_book_update(const std::vector<unsigned char>& bytes,
         const unsigned char* base =
             bytes.data() + offset + sizeof(header) + sizeof(out);
         for (std::size_t i = 0; i < count; ++i) {
-          cascade::proto::PriceLevel level;
+          cascade::proto::PriceLevel level{};
           std::memcpy(&level, base + i * sizeof(level), sizeof(level));
           levels->push_back(level);
         }
@@ -204,7 +204,7 @@ TEST(a_subscriber_receives_updates_end_to_end) {
   CHECK_GE(count_frames(socket.received, cascade::proto::ClientMsgType::kBookUpdate),
            std::size_t{1});
 
-  cascade::proto::BookUpdateMsg update;
+  cascade::proto::BookUpdateMsg update{};
   CHECK(last_book_update(socket.received, update));
   CHECK_EQ(update.symbol, Symbol::from_text("AAPL").raw());
   CHECK_EQ(update.bid_levels, std::uint8_t{1});
@@ -220,7 +220,7 @@ TEST(a_subscriber_hears_nothing_about_instruments_it_did_not_ask_for) {
   plant.apply(add_order(1, "MSFT", Side::kBuy, 420.00, 100, 1));
   plant.fanout->poll(1'000);
 
-  cascade::proto::BookUpdateMsg update;
+  cascade::proto::BookUpdateMsg update{};
   if (last_book_update(socket.received, update)) {
     CHECK_EQ(update.symbol, Symbol::from_text("AAPL").raw());
   }
@@ -266,7 +266,7 @@ TEST(a_late_subscriber_is_given_the_current_book_at_once) {
   plant.fanout->subscribe(slot, Symbol::from_text("AAPL"), cascade::proto::kFlagConflated);
   plant.fanout->poll(1'000);
 
-  cascade::proto::BookUpdateMsg update;
+  cascade::proto::BookUpdateMsg update{};
   CHECK(last_book_update(socket.received, update));
   CHECK_EQ(update.bid_levels, std::uint8_t{1});
   CHECK_EQ(update.ask_levels, std::uint8_t{1});
@@ -351,7 +351,7 @@ TEST(a_backed_up_subscriber_is_caught_up_with_current_state) {
   plant.fanout->poll(2'000);
   plant.fanout->poll(3'000);
 
-  cascade::proto::BookUpdateMsg update;
+  cascade::proto::BookUpdateMsg update{};
   std::vector<cascade::proto::PriceLevel> levels;
   CHECK(last_book_update(socket.received, update, &levels));
   // It is handed the *latest* best bid, not the next one in a queue.
@@ -429,7 +429,7 @@ TEST(unsubscribing_stops_delivery_but_keeps_the_connection) {
   plant.apply(add_order(2, "MSFT", Side::kBuy, 420.00, 100, 2));
   plant.fanout->poll(1'000);
 
-  cascade::proto::BookUpdateMsg update;
+  cascade::proto::BookUpdateMsg update{};
   CHECK(last_book_update(socket.received, update));
   CHECK_EQ(update.symbol, Symbol::from_text("MSFT").raw());
   CHECK_EQ(plant.fanout->subscriber_count(), std::size_t{1});

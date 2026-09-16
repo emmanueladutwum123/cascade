@@ -119,7 +119,7 @@ class RecoveryClient : public feed::RecoveryRequester {
     inbox_.insert(inbox_.end(), scratch, scratch + bytes);
 
     while (inbox_.size() >= sizeof(proto::RecoveryResponseHeader)) {
-      proto::RecoveryResponseHeader header;
+      proto::RecoveryResponseHeader header{};
       std::memcpy(&header, inbox_.data(), sizeof(header));
       const std::size_t payload_bytes = header.payload_bytes.value();
       const std::size_t total = sizeof(header) + payload_bytes;
@@ -249,7 +249,7 @@ bool handle_client_frame(FanoutWorker& worker, Connection& connection,
   switch (static_cast<proto::ClientMsgType>(type)) {
     case proto::ClientMsgType::kLogin: {
       if (payload_bytes < sizeof(proto::LoginMsg)) return false;
-      proto::LoginMsg login;
+      proto::LoginMsg login{};
       std::memcpy(&login, payload, sizeof(login));
 
       dist::Subscriber* subscriber = worker.fanout->subscriber_at(connection.slot);
@@ -279,7 +279,7 @@ bool handle_client_frame(FanoutWorker& worker, Connection& connection,
     case proto::ClientMsgType::kSubscribe: {
       if (!connection.logged_in) return false;  // no data before authentication
       if (payload_bytes < sizeof(proto::SubscribeMsg)) return false;
-      proto::SubscribeMsg request;
+      proto::SubscribeMsg request{};
       std::memcpy(&request, payload, sizeof(request));
       const std::size_t needed =
           sizeof(request) + static_cast<std::size_t>(request.symbol_count) * 8;
@@ -296,7 +296,7 @@ bool handle_client_frame(FanoutWorker& worker, Connection& connection,
     case proto::ClientMsgType::kUnsubscribe: {
       if (!connection.logged_in) return false;
       if (payload_bytes < sizeof(proto::SubscribeMsg)) return false;
-      proto::SubscribeMsg request;
+      proto::SubscribeMsg request{};
       std::memcpy(&request, payload, sizeof(request));
       for (std::uint16_t i = 0; i < request.symbol_count; ++i) {
         const Symbol symbol =

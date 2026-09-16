@@ -139,7 +139,7 @@ class RecoveryServer {
     client.inbox.insert(client.inbox.end(), scratch, scratch + bytes);
 
     while (client.inbox.size() >= sizeof(proto::RecoveryRequest)) {
-      proto::RecoveryRequest request;
+      proto::RecoveryRequest request{};
       std::memcpy(&request, client.inbox.data(), sizeof(request));
       client.inbox.erase(client.inbox.begin(),
                          client.inbox.begin() + sizeof(request));

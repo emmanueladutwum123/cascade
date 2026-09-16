@@ -264,7 +264,7 @@ int main(int argc, char** argv) {
     while (reader.next_frame(type, payload, payload_bytes)) {
       switch (static_cast<proto::ClientMsgType>(type)) {
         case proto::ClientMsgType::kLoginAck: {
-          proto::LoginAckMsg ack;
+          proto::LoginAckMsg ack{};
           std::memcpy(&ack, payload, sizeof(ack));
           if (ack.status != static_cast<std::uint8_t>(proto::LoginStatus::kOk)) {
             std::printf("[sub] login refused (status %u)\n", ack.status);
@@ -276,7 +276,7 @@ int main(int argc, char** argv) {
           break;
         }
         case proto::ClientMsgType::kSubscribeAck: {
-          proto::SubscribeAckMsg ack;
+          proto::SubscribeAckMsg ack{};
           std::memcpy(&ack, payload, sizeof(ack));
           if (ack.status == static_cast<std::uint8_t>(proto::SubscribeStatus::kOk)) {
             ++acks_ok;
@@ -288,7 +288,7 @@ int main(int argc, char** argv) {
           break;
         }
         case proto::ClientMsgType::kBookUpdate: {
-          proto::BookUpdateMsg update;
+          proto::BookUpdateMsg update{};
           std::memcpy(&update, payload, sizeof(update));
           ++book_updates;
           conflated_total += update.conflated_count;
@@ -313,7 +313,7 @@ int main(int argc, char** argv) {
           break;
         }
         case proto::ClientMsgType::kTradeTick: {
-          proto::TradeTickMsg tick;
+          proto::TradeTickMsg tick{};
           std::memcpy(&tick, payload, sizeof(tick));
           ++trades;
           if (options.print_book) {
@@ -323,7 +323,7 @@ int main(int argc, char** argv) {
           break;
         }
         case proto::ClientMsgType::kSymbolStatus: {
-          proto::SymbolStatusMsg status;
+          proto::SymbolStatusMsg status{};
           std::memcpy(&status, payload, sizeof(status));
           ++stale_notices;
           std::printf("[sub] %s is now %s\n", Symbol(status.symbol).text().c_str(),
@@ -331,7 +331,7 @@ int main(int argc, char** argv) {
           break;
         }
         case proto::ClientMsgType::kEvicted: {
-          proto::EvictedMsg notice;
+          proto::EvictedMsg notice{};
           std::memcpy(&notice, payload, sizeof(notice));
           std::printf("[sub] EVICTED: %s (backlog %llu bytes, stalled %.1f ms)\n",
                       evict_reason_name(notice.reason),
