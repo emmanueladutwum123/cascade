@@ -1,0 +1,60 @@
+cascade-bench
+  hardware threads   : 8
+  tick frequency     : 24.000 MHz (latency floor 41.7 ns)
+  cache line assumed : 128 bytes
+  instruments        : 500 across 2 shards
+  subscribers        : 50 x 100 subscriptions over 1 fan-out thread(s)
+  messages           : 2000000
+  latency run load   : 250000 msg/s
+
+Primitives (single-threaded, amortised over the loop)
+------------------------------------------------------------------------------
+  SpscRing                                5.37 ns  push + pop round trip
+  Seqlock store                           5.13 ns  publish a 368-byte book image
+  Seqlock load                            5.64 ns  uncontended read
+  FlatHashMap find                        7.99 ns  500000 live entries
+  FlatHashMap churn                      38.46 ns  erase + insert at steady occupancy
+    (health)                                34     longest probe chain after churn
+  Order book ladder                      25.30 ns  add + remove near the touch (200 levels deep)
+  Message decode                          1.41 ns  big-endian wire -> normalised event
+
+Stage throughput (amortised; the 24MHz counter cannot time single ops)
+------------------------------------------------------------------------------
+  decode                                   108.01 M/s   (2000000 in 0.019s)
+  decode + book build                        3.94 M/s   (2000000 in 0.508s)
+  decode + book + fan-out                    3.01 M/s   (2000000 in 0.664s)
+    (fan-out share)                         77.91 ns/msg
+
+Where the work goes
+------------------------------------------------------------------------------
+  feed events applied                       2000000
+  book changes visible at depth              410219
+  book changes below depth                  1589781   79.5% stopped at the shard
+  trades printed                              46686
+  updates delivered                         3108873   across 50 subscribers
+  states conflated away                      752449
+  bytes written to subscribers               1041.6 MB
+
+Wire-to-wire latency at 250k msg/s offered load (feed -> book -> fan-out -> frame)
+------------------------------------------------------------------------------
+  delivered at offered load                  0.25 M/s   (2000000 in 8.000s)
+  producer fell behind on                    7348 messages (offered load exceeds capacity;
+                                                   the delay is included in the distribution)
+
+  wire-to-wire         n=231363      min=666       p50=1583      p90=3917      p99=322559    p99.9=9224191   p99.99=19136511  max=20272875 ns
+
+  Distribution (feed message decoded -> subscriber frame written):
+  percentile      value(ns)
+  0               666
+  10              1166
+  25              1375
+  50              1583
+  75              1958
+  90              3917
+  95              18927
+  99              322559
+  99.9            9224191
+  99.99           19136511
+  99.999          20217855
+  100             20283391
+

@@ -54,9 +54,30 @@ CASCADE_ALWAYS_INLINE std::uint64_t cpu_ticks() noexcept {
 /// Frequency of `cpu_ticks()` in Hz, measured once on first use.
 double tick_frequency_hz() noexcept;
 
+/// Monotonic nanoseconds at the finest resolution the hardware actually offers.
+///
+/// `clock_gettime(CLOCK_MONOTONIC)` reports nanoseconds but does not deliver them: on
+/// macOS it is quantised to 1us, which is coarser than the entire latency budget of the
+/// paths measured here and would turn a latency histogram into a histogram of the
+/// clock. Deriving the timestamp from the hardware counter instead gives ~41.7ns on
+/// Apple Silicon (a 24MHz virtual counter) and sub-nanosecond on x86 -- still a floor,
+/// but one an order of magnitude below what is being measured.
+///
+/// The epoch is arbitrary, so only differences are meaningful. Use `wall_nanos` for
+/// anything that has to be comparable across machines.
+std::uint64_t hires_nanos() noexcept;  // defined below
+
+/// The measurement floor of `hires_nanos()`, in nanoseconds. Worth printing next to any
+/// latency figure: a p50 at or below this is reporting the clock, not the code.
+inline double hires_resolution_nanos() noexcept { return 1e9 / tick_frequency_hz(); }
+
 /// Convert a `cpu_ticks()` delta to nanoseconds.
 CASCADE_ALWAYS_INLINE double ticks_to_nanos(std::uint64_t ticks) noexcept {
   return static_cast<double>(ticks) * (1e9 / tick_frequency_hz());
+}
+
+CASCADE_ALWAYS_INLINE std::uint64_t hires_nanos() noexcept {
+  return static_cast<std::uint64_t>(ticks_to_nanos(cpu_ticks()));
 }
 
 }  // namespace cascade
