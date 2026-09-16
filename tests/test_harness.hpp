@@ -4,9 +4,35 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace cascade::test {
+
+/// Render a value for a failure message.
+///
+/// `std::to_string` covers only the arithmetic types, and a bare overload set would
+/// make `CHECK_EQ` unusable on strings and enums -- which is exactly when a good
+/// failure message matters most. These overloads keep the macros type-agnostic.
+inline std::string to_text(const std::string& value) { return "\"" + value + "\""; }
+inline std::string to_text(const char* value) {
+  return value ? "\"" + std::string(value) + "\"" : "(null)";
+}
+inline std::string to_text(bool value) { return value ? "true" : "false"; }
+
+template <typename T>
+inline std::string to_text(const T& value) {
+  if constexpr (std::is_enum<T>::value) {
+    return std::to_string(static_cast<long long>(value));
+  } else if constexpr (std::is_arithmetic<T>::value) {
+    // Promote the narrow character types: to_string has no overload for them and
+    // would otherwise be ambiguous.
+    if constexpr (sizeof(T) == 1) return std::to_string(static_cast<long long>(value));
+    else return std::to_string(value);
+  } else {
+    return "<unprintable>";
+  }
+}
 
 struct Case {
   const char* name;
@@ -40,8 +66,8 @@ struct Registrar {
     if (!(_lhs == _rhs)) {                                                      \
       ::cascade::test::fail(__FILE__, __LINE__,                                 \
                             std::string("CHECK_EQ(" #a ", " #b ")  lhs=") +     \
-                                std::to_string(_lhs) + " rhs=" +                \
-                                std::to_string(_rhs));                          \
+                                ::cascade::test::to_text(_lhs) + " rhs=" +    \
+                                ::cascade::test::to_text(_rhs));                          \
     }                                                                           \
   } while (0)
 
@@ -52,8 +78,8 @@ struct Registrar {
     if (!(_lhs <= _rhs)) {                                                      \
       ::cascade::test::fail(__FILE__, __LINE__,                                 \
                             std::string("CHECK_LE(" #a ", " #b ")  lhs=") +     \
-                                std::to_string(_lhs) + " rhs=" +                \
-                                std::to_string(_rhs));                          \
+                                ::cascade::test::to_text(_lhs) + " rhs=" +    \
+                                ::cascade::test::to_text(_rhs));                          \
     }                                                                           \
   } while (0)
 
@@ -64,7 +90,7 @@ struct Registrar {
     if (!(_lhs >= _rhs)) {                                                      \
       ::cascade::test::fail(__FILE__, __LINE__,                                 \
                             std::string("CHECK_GE(" #a ", " #b ")  lhs=") +     \
-                                std::to_string(_lhs) + " rhs=" +                \
-                                std::to_string(_rhs));                          \
+                                ::cascade::test::to_text(_lhs) + " rhs=" +    \
+                                ::cascade::test::to_text(_rhs));                          \
     }                                                                           \
   } while (0)
